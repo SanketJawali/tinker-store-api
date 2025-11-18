@@ -8,11 +8,24 @@ class User(BaseModel):
     cart: list[int]
 
 
-class Item(BaseModel):
+class ProductRequest(BaseModel):
+    name: str
+    price: int
+    description: str
+    category: str
+    stock: int
+    owner_id: int
+    image_url: str
+
+
+class Product(BaseModel):
     id: int
     name: str
     price: int
     description: str
+    category: str
+    stock: int
+    owner_id: int
     image_url: str
 
 
