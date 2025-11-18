@@ -1,6 +1,8 @@
 import time
-from fastapi import FastAPI
-import libsql
+from fastapi import FastAPI, HTTPException, status
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
+from models import Base, UserDB, ProductDB
 from dotenv import load_dotenv
 from imagekitio import ImageKit
 import os
@@ -17,6 +19,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# Storing the server start time, for any time calculations
 start_time = time.time()
 load_dotenv()
 
@@ -29,13 +33,20 @@ imagekit = ImageKit(
 )
 
 
-# Setting up Turso Database
+# Setting up Database
 url = os.getenv("TURSO_DATABASE_URL")
 auth_token = os.getenv("TURSO_AUTH_TOKEN")
 
-remote_url = f"{url}?authToken={auth_token}"
+engine = create_engine(
+    f"sqlite+{url}?secure=true",
+    connect_args={
+        "auth_token": auth_token,
+    },
+)
 
-db = libsql.connect("tinkerStore.db", sync_url=url, auth_token=auth_token)
+session = sessionmaker(bind=engine)
+Base.metadata.create_all(engine)
+
 
 # NOTE:Temperory veriable to store all product list
 all_products = ""
@@ -49,7 +60,6 @@ def system_status():
     return {
         "status": "ok",
         "uptime_seconds": round(time.time() - start_time),
-        "version": "1.0.0"
     }
 
 
@@ -58,39 +68,28 @@ def get_cdn_auth():
     """
         This route provides the auth signature for image uploading to CDN
     """
-    auth = imagekit.get_authentication_parameters()
-    return auth
+    return imagekit.get_authentication_parameters()
 
 
 @app.get("/admin/init_db")
 def init_db():
-    print(db.execute('''
-CREATE TABLE IF NOT EXISTS products (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner_id INTEGER NOT NULL,
-    name TEXT NOT NULL CHECK (length(name) <= 50),
-    description TEXT NOT NULL CHECK (length(description) <= 500),
-    price REAL NOT NULL,
-    category TEXT NOT NULL,
-    stock INTEGER NOT NULL CHECK (stock >= 0),
-    image_url TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
-);
-          '''))
-
-    db.execute("select * from products").fetchall()
+    # db.execute("select * from products").fetchall()
     return {"message": "DB created"}
 
 
 @app.get("/api/product")
 def get_all_products(q: str = None):
     """
-        Route to get all the products from the database.
+    Fetches all ProductDB records from the database.
         Query parameter:
             q: Search parameter
     """
-    return {"success": "ok", "message": "", "data": dict(all_products)}
+    # select all the products from db and cache them
+    stmt = select(ProductDB)
+    with session() as ses:
+        all_products_list = ses.scalars(stmt).all()
+
+    return all_products_list
 
 
 @app.get("/api/product/{product_id}")
@@ -104,41 +103,33 @@ def get_product(product_id: int, section: str = 'details'):
 
 
 @app.post("/api/product")
-def post_product(product: ProductRequest):
+def post_product(product_data: ProductRequest):
     """
         Route to create a new product.
     """
     # Authenticate user
+    db_product = ProductDB(**product_data.model_dump())
 
+    with session() as db:
+        try:
+            db.add(db_product)
+            db.commit()
+            db.refresh(db_product)
+
+        except Exception as e:
+            # Handle potential DB errors (e.g., owner_id not found)
+            db.rollback()
+            # Log the error
+            print(f"Database error during product creation: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Could not create product. Check if the owner_id is valid."
+            )
     # Get product from request
-    query = """
-    INSERT INTO products (
-        owner_id,
-        name,
-        description,
-        price,
-        category,
-        stock,
-        image_url
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    """
-
-    params = (
-        product.owner_id,
-        product.name,
-        product.description,
-        product.price,
-        product.category,
-        product.stock,
-        product.image_url
-    )
-
-    result = db.execute(query, params)
-    print("Inserted row ID:", result)
 # Validate product data
 # Add product to DB
 # Commit DB and Sync DB
-    return {"message": "success"}
+    return db_product
 
 
 @app.get("/api/cart")

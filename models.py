@@ -1,0 +1,68 @@
+from sqlalchemy import Integer, String, ForeignKey, Text, DateTime, func
+from sqlalchemy.orm import declarative_base, relationship, Mapped, mapped_column
+from datetime import datetime
+
+Base = declarative_base()
+
+
+class UserDB(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), index=True)
+    email: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+
+    def __repr__(self):
+        return f"UserDB(id={self.id!r}, name={self.name!r})"
+
+
+class ProductDB(Base):
+    __tablename__ = "products"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), index=True)
+    price: Mapped[int] = mapped_column(Integer)
+    description: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(50), index=True)
+    stock: Mapped[int] = mapped_column(Integer)
+    image_url: Mapped[str] = mapped_column(String(255))
+
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+
+    # Unidirectional relationship: Product knows its owner, but User doesn't list products.
+    owner: Mapped["UserDB"] = relationship()
+
+    def __repr__(self):
+        return (f"ProductDB(id={self.id!r}, name={self.name!r}, "
+                f"owner_id={self.owner_id!r}, stock={self.stock!r})")
+
+
+class ReviewDB(Base):
+    __tablename__ = "reviews"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    # Foreign Keys with Indexing
+    item_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+
+    rating: Mapped[int] = mapped_column(Integer)
+    review_text: Mapped[str] = mapped_column(Text)
+
+    # Timestamps with automatic database defaults
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now()
+    )
+
+    # Relationships (defining the link back to User and Product)
+    # user: Mapped["UserDB"] = relationship(back_populates="reviews")
+    # product: Mapped["ProductDB"] = relationship(back_populates="reviews")
+
+    def __repr__(self):
+        return f"ReviewDB(id={self.id!r}, rating={self.rating!r}, item_id={self.item_id!r})"
