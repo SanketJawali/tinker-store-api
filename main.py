@@ -10,14 +10,13 @@ from sqlalchemy.orm import sessionmaker, Session
 from pydantic_settings import BaseSettings
 
 # Custom imports
-from models import Base, ProductDB, ReviewDB  # Import ReviewDB for query
+from models import Base, UserDB, ProductDB, ReviewDB  # Import ReviewDB for query
 from structs import (
     ProductRequest,
     ProductListWrapper,
     SingleProductWrapper,
     ProductDetailsWrapper,
     APIErrorResponse,
-    # Updated model imports based on refined structs.py
     Product,
     Review
 )
@@ -25,9 +24,8 @@ from structs import (
 from auth import requires_auth, require_admin
 from imagekitio import ImageKit
 
+
 # --- Configuration ---
-
-
 class Settings(BaseSettings):
     # Existing Fields
     TURSO_DATABASE_URL: str
@@ -152,25 +150,54 @@ def get_all_products(q: str | None = None, db: Session = Depends(get_db)):
 @requires_auth
 async def post_product(product_data: ProductRequest, request: Request, db: Session = Depends(get_db)):
     """
-    Creates a new product.
+    Creates a new product. Auto-links to the authenticated user.
     """
-    db_product = ProductDB(**product_data.model_dump())
-
     try:
+        # 1. Get User Info from Token
+        user_claims = request.state.user
+        # Prefer email, fallback to sub (Clerk ID) if email is missing
+        user_email = user_claims.get("email")
+        user_name = user_claims.get("name") or "Unknown User"
+
+        if not user_email:
+            # If email is missing in claims, we can't reliably link to UserDB based on your schema
+            raise HTTPException(
+                status_code=400,
+                detail="User email not found in token claims. Ensure 'email' is in session token."
+            )
+
+        # 2. Resolve UserDB ID (Sync logic)
+        # Check if user exists in our DB
+        stmt = select(UserDB).where(UserDB.email == user_email)
+        db_user = db.scalars(stmt).first()
+
+        if not db_user:
+            # User doesn't exist in local DB yet -> Create them (Lazy Sync)
+            logger.info(f"Creating new local user for {user_email}")
+            db_user = UserDB(name=user_name, email=user_email)
+            db.add(db_user)
+            db.commit()
+            db.refresh(db_user)
+
+        # 3. Create Product
+        # We exclude owner_id from the incoming data (if it was there) and inject the real ID
+        product_dict = product_data.model_dump()
+        db_product = ProductDB(**product_dict, owner_id=db_user.id)
+
         db.add(db_product)
         db.commit()
         db.refresh(db_product)
 
-        # Return data wrapped in the Pydantic model
         return SingleProductWrapper(
             data=db_product,
             message="Product created successfully."
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         logger.error(f"Database error creating product: {e}")
-        # Custom Error Response for API structure
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=APIErrorResponse(

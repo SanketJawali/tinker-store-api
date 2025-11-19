@@ -55,8 +55,6 @@ class ProductRequest(BaseModel):
     stock: int = Field(..., ge=0, description="Current stock quantity.")
     image_url: str = Field(..., max_length=255,
                            description="URL of the product image.")
-    owner_id: int = Field(...,
-                          description="ID of the user who owns this product.")
 
     class Config:
         from_attributes = True
