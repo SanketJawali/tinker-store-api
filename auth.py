@@ -1,75 +1,118 @@
-from functools import wraps
-from fastapi.responses import JSONResponse
-from clerk_backend_api.jwks_helpers import AuthenticateRequestOptions
-import httpx
-from clerk_backend_api import Clerk
-from dotenv import load_dotenv
 import os
+import jwt
+from functools import wraps
+from jwt import PyJWKClient
+from fastapi import Request, HTTPException, status
+from fastapi.responses import JSONResponse
+from dotenv import load_dotenv
 
 load_dotenv()
 
+# --- Configuration ---
+CLERK_ISSUER = os.getenv("CLERK_ISSUER")
+if not CLERK_ISSUER:
+    raise ValueError("CLERK_ISSUER not set in .env file")
 
-def get_auth_state(request: httpx.Request):
-    sdk = Clerk(bearer_auth=os.getenv("CLERK_SECRET_KEY"))
-    request_state = sdk.authenticate_request(
-        request,
-        AuthenticateRequestOptions(
-            authorized_parties=['http://localhost:3000/']
+JWKS_URL = f"{CLERK_ISSUER}/.well-known/jwks.json"
+jwks_client = PyJWKClient(JWKS_URL)
+
+
+def validate_token_logic(token: str):
+    """
+    Internal helper to decode and verify the JWT.
+    """
+    try:
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+
+        payload = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            issuer=CLERK_ISSUER,
+            options={"verify_aud": False}
         )
-    )
-    return request_state
+        return payload
 
-
-# Auth validation with clerk
-def is_signed_in(request: httpx.Request):
-    return get_auth_state().is_signed_in
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e)
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication error"
+        )
 
 
 def requires_auth(func):
+    """
+    Decorator to enforce authentication.
+    IMPORTANT: The decorated route MUST accept a 'request' argument.
+    """
     @wraps(func)
-    async def wrapper(request, *args, **kwargs):
-        # FastAPI provides request as a parameter if you include it in the handler
+    async def wrapper(*args, **kwargs):
+        # 1. Find the Request object in args or kwargs
+        request = kwargs.get("request") or next(
+            (arg for arg in args if isinstance(arg, Request)), None)
 
-        # Convert to httpx.Request because your checker expects that
-        httpx_request = httpx.Request(
-            method=request.method,
-            url=str(request.url),
-            headers=request.headers.raw
-        )
-
-        if not is_signed_in(httpx_request):
+        if not request:
             return JSONResponse(
-                {"success": False, "error": "AUTH_FAILED"},
+                {"error": "System Error: Route must include 'request: Request' parameter"},
+                status_code=500
+            )
+
+        # 2. Extract Header
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return JSONResponse(
+                {"error": "Missing or invalid Authorization header"},
                 status_code=401
             )
 
-        return await func(request, *args, **kwargs)
+        token = auth_header.split(" ")[1]
+
+        # 3. Verify Token
+        try:
+            payload = validate_token_logic(token)
+            # Attach user to request.state so it's accessible in the route via request.state.user
+            request.state.user = payload
+        except HTTPException as e:
+            return JSONResponse({"error": e.detail}, status_code=e.status_code)
+
+        return await func(*args, **kwargs)
     return wrapper
 
 
 def require_admin(func):
+    """
+    Decorator to enforce Admin access.
+    Must be placed AFTER @requires_auth (or assuming auth is already checked).
+    """
     @wraps(func)
-    async def wrapper(request, *args, **kwargs):
-        # require_auth must run BEFORE this decorator
-        user = getattr(request.state, "user", None)
+    async def wrapper(*args, **kwargs):
+        request = kwargs.get("request") or next(
+            (arg for arg in args if isinstance(arg, Request)), None)
 
-        if user is None:
-            return JSONResponse(
-                {"success": False, "error": "AUTH_REQUIRED_BEFORE_ADMIN_CHECK"},
-                status_code=401
-            )
+        if not request:
+            return JSONResponse({"error": "System Error: Request object missing"}, status_code=500)
 
+        # Ensure user is authenticated (check if state.user exists)
+        if not hasattr(request.state, "user"):
+            return JSONResponse({"error": "Authentication required before Admin check"}, status_code=401)
+
+        user = request.state.user
         admin_list = os.getenv("ADMINS", "").split(",")
 
-        # Clerk user fields: id, email_address, username, etc.
-        username = user.username or user.email_addresses[0].email_address
+        # Check identifier
+        user_identifier = user.get("email") or user.get(
+            "username") or user.get("sub")
 
-        if username not in admin_list:
+        if user_identifier not in admin_list:
             return JSONResponse(
-                {"success": False, "error": "NOT_ADMIN"},
+                {"error": "Admin access required"},
                 status_code=403
             )
 
-        return await func(request, *args, **kwargs)
-
+        return await func(*args, **kwargs)
     return wrapper

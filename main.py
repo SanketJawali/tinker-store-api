@@ -3,26 +3,43 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Generator
 
-from fastapi import FastAPI, HTTPException, status, Depends
+from fastapi import FastAPI, HTTPException, status, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, or_
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic_settings import BaseSettings
 
 # Custom imports
-from models import Base, ProductDB
-from structs import ProductRequest
-from auth import requires_auth
+from models import Base, ProductDB, ReviewDB  # Import ReviewDB for query
+from structs import (
+    ProductRequest,
+    ProductListWrapper,
+    SingleProductWrapper,
+    ProductDetailsWrapper,
+    APIErrorResponse,
+    # Updated model imports based on refined structs.py
+    Product,
+    Review
+)
+# Use the decorator-based auth from auth.py
+from auth import requires_auth, require_admin
 from imagekitio import ImageKit
 
-
 # --- Configuration ---
+
+
 class Settings(BaseSettings):
+    # Existing Fields
     TURSO_DATABASE_URL: str
     TURSO_AUTH_TOKEN: str
     IMAGE_KIT_PRIVATE_KEY: str
     IMAGE_KIT_PUBLIC_KEY: str
     IMAGE_KIT_URL: str
+
+    # NEW FIELDS ADDED TO RESOLVE VALIDATION ERROR
+    CLERK_SECRET_KEY: str
+    CLERK_ISSUER: str
+    GROQ_API_KEY: str  # Include this since it was in your .env and caused an error
 
     class Config:
         env_file = ".env"
@@ -31,7 +48,7 @@ class Settings(BaseSettings):
 settings = Settings()
 logger = logging.getLogger("uvicorn")
 
-# --- Database Setup ---
+# --- Database Setup (Unchanged) ---
 engine = create_engine(
     f"sqlite+{settings.TURSO_DATABASE_URL}?secure=true",
     connect_args={"auth_token": settings.TURSO_AUTH_TOKEN},
@@ -73,14 +90,16 @@ app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
+    # Don't use "*" in production if possible
     allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
 # --- Routes ---
+
+
 @app.get("/")
 def system_status():
     """Display system status and uptime."""
@@ -93,66 +112,142 @@ def system_status():
 
 @app.get("/api/cdn-auth")
 @requires_auth
-def get_cdn_auth():
+async def get_cdn_auth(request: Request):
     """Provides auth signature for ImageKit."""
     return imagekit.get_authentication_parameters()
 
 
-@app.get("/api/product")
+@app.get("/api/product", response_model=ProductListWrapper, tags=["Products"])
 def get_all_products(q: str | None = None, db: Session = Depends(get_db)):
     """
-    Fetches all products.
-    TODO: Implement 'q' search filtering logic.
+    Fetches products. If 'q' is provided, filters by name or description.
     """
     stmt = select(ProductDB)
 
-    # Example of implementing the search param 'q' if needed:
-    # if q:
-    #     stmt = stmt.where(ProductDB.name.contains(q))
+    if q:
+        search_filter = f"%{q}%"
+        stmt = stmt.where(
+            or_(
+                ProductDB.name.ilike(search_filter),
+                ProductDB.description.ilike(search_filter)
+            )
+        )
 
     products = db.scalars(stmt).all()
-    return products
+
+    # Return data wrapped in the Pydantic model
+    return ProductListWrapper(data=products)
 
 
-@app.post("/api/product", status_code=status.HTTP_201_CREATED)
+@app.post(
+    "/api/product",
+    status_code=status.HTTP_201_CREATED,
+    response_model=SingleProductWrapper,
+    responses={
+        401: {"model": APIErrorResponse, "description": "Authentication failed"},
+        500: {"model": APIErrorResponse, "description": "Database error"},
+    },
+    tags=["Products"]
+)
 @requires_auth
-def post_product(product_data: ProductRequest, db: Session = Depends(get_db)):
+async def post_product(product_data: ProductRequest, request: Request, db: Session = Depends(get_db)):
     """
     Creates a new product.
     """
-    # 1. Validate & Map: Pydantic (ProductRequest) has already validated types here.
-    # We map the request model to the DB model.
     db_product = ProductDB(**product_data.model_dump())
 
     try:
-        # 2. Add to Session
         db.add(db_product)
-
-        # 3. Commit & Refresh
         db.commit()
         db.refresh(db_product)
 
-        return db_product
+        # Return data wrapped in the Pydantic model
+        return SingleProductWrapper(
+            data=db_product,
+            message="Product created successfully."
+        )
 
     except Exception as e:
         db.rollback()
         logger.error(f"Database error creating product: {e}")
+        # Custom Error Response for API structure
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An error occurred while creating the product."
+            detail=APIErrorResponse(
+                message="Could not create product due to a database error.",
+                error_code="DB_CREATE_ERROR"
+            ).model_dump_json(),
+            headers={"Content-Type": "application/json"}
         )
 
 
-@app.get("/api/product/{product_id}")
-def get_product(product_id: int, section: str = 'details'):
-    pass
+@app.get(
+    "/api/product/{product_id}",
+    response_model=ProductDetailsWrapper,
+    responses={
+        404: {"model": APIErrorResponse, "description": "Product not found"},
+        500: {"model": APIErrorResponse, "description": "Server error"},
+    },
+    tags=["Products"]
+)
+def get_product(product_id: int, db: Session = Depends(get_db)):
+    """
+    Route to get details of a single product and its reviews.
+    """
+    try:
+        # 1. Fetch the single product
+        product = db.get(ProductDB, product_id)
+
+        if not product:
+            # Raise 404 with structured error response
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=APIErrorResponse(
+                    message=f"Product with id {product_id} not found.",
+                    error_code="PRODUCT_NOT_FOUND"
+                ).model_dump_json(),
+                headers={"Content-Type": "application/json"}
+            )
+
+        # 2. Fetch all reviews for that product ID
+        review_stmt = select(ReviewDB).where(ReviewDB.item_id == product_id)
+        reviews = db.scalars(review_stmt).all()
+
+        # 3. Combine product details and reviews into the structured response
+        return ProductDetailsWrapper(
+            product=product,
+            reviews=reviews,
+            message=f"Product {product_id} retrieved successfully."
+        )
+
+    except HTTPException:
+        # Re-raise explicit HTTPExceptions (like the 404 above)
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching product {product_id}: {e}")
+        # Catch generic server errors and return structured 500 response
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=APIErrorResponse(
+                message="An unexpected server error occurred while retrieving the product.",
+                error_code="SERVER_FETCH_ERROR"
+            ).model_dump_json(),
+            headers={"Content-Type": "application/json"}
+        )
 
 
 @app.get("/api/cart")
 def get_cart():
+    """
+    Route to get products in cart of a user.
+    """
     pass
 
 
 @app.post("/api/contact")
 def post_contact():
+    """
+    Route to handle the contact messages.
+    Forwards the contact messages to the Developer's email.
+    """
     pass
