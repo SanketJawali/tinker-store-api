@@ -10,8 +10,9 @@ from sqlalchemy.orm import sessionmaker, Session
 from pydantic_settings import BaseSettings
 
 # Custom imports
-from models import Base, UserDB, ProductDB, ReviewDB  # Import ReviewDB for query
-from structs import (
+# Import ReviewDB for query
+from lib.models import Base, UserDB, ProductDB, ReviewDB
+from lib.structs import (
     ProductRequest,
     ProductListWrapper,
     SingleProductWrapper,
@@ -20,8 +21,8 @@ from structs import (
     Product,
     Review
 )
-# Use the decorator-based auth from auth.py
-from auth import requires_auth, require_admin
+from lib.cache import get_redis_client, Redis
+from lib.auth import requires_auth, require_admin
 from imagekitio import ImageKit
 
 
@@ -95,9 +96,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # --- Routes ---
-
-
 @app.get("/")
 def system_status():
     """Display system status and uptime."""
@@ -116,12 +116,27 @@ async def get_cdn_auth(request: Request):
 
 
 @app.get("/api/product", response_model=ProductListWrapper, tags=["Products"])
-def get_all_products(q: str | None = None, db: Session = Depends(get_db)):
+def get_all_products(
+    q: str | None = None,
+    db: Session = Depends(get_db),
+    redis: Redis = Depends(get_redis_client)
+):
     """
-    Fetches products. If 'q' is provided, filters by name or description.
+    Fetches products with Caching.
     """
-    stmt = select(ProductDB)
+    # Define a unique Cache Key based on the query
+    # If q is None, key is "products:all". If q, key is "products:search:{q}"
+    cache_key = f"products:search:{q}" if q else "products:all"
 
+    # Get dat from redis if cache found
+    cached_data = redis.get(cache_key)
+    if cached_data:
+        # Deserialize JSON string back to Pydantic Model
+        return ProductListWrapper.model_validate_json(cached_data)
+
+    # Get data from Turso db
+    logger.info("Cache miss - fetching products from DB")
+    stmt = select(ProductDB)
     if q:
         search_filter = f"%{q}%"
         stmt = stmt.where(
@@ -130,11 +145,16 @@ def get_all_products(q: str | None = None, db: Session = Depends(get_db)):
                 ProductDB.description.ilike(search_filter)
             )
         )
-
     products = db.scalars(stmt).all()
 
-    # Return data wrapped in the Pydantic model
-    return ProductListWrapper(data=products)
+    # Create the Pydantic wrapper
+    response_wrapper = ProductListWrapper(data=products)
+
+    # Save db data to Redis (Serialization)
+    # Convert Pydantic model to JSON string and save with 1 hour TTL (3600s)
+    redis.set(cache_key, response_wrapper.model_dump_json(), ex=3600)
+
+    return response_wrapper
 
 
 @app.post(
