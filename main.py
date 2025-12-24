@@ -18,6 +18,7 @@ from lib.structs import (
     SingleProductWrapper,
     ProductDetailsWrapper,
     APIErrorResponse,
+    ProductInfoWithReviews,
     Product,
     Review
 )
@@ -262,8 +263,7 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
 
         # 3. Combine product details and reviews into the structured response
         return ProductDetailsWrapper(
-            product=product,
-            reviews=reviews,
+            data=ProductInfoWithReviews(product=product, reviews=reviews),
             message=f"Product {product_id} retrieved successfully."
         )
 

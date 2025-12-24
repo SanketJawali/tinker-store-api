@@ -86,8 +86,12 @@ class SingleProductWrapper(BaseModel):
 
 
 # 4. Wrapper for Product Details with Reviews (GET /api/product/{id})
+class ProductInfoWithReviews(BaseModel):
+    product: Product
+    reviews: List[Review]
+
+
 class ProductDetailsWrapper(BaseModel):
     success: bool = True
     message: str = "Successfully retrieved product and reviews."
-    product: Product
-    reviews: List[Review]
+    data: ProductInfoWithReviews
