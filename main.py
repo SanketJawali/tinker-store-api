@@ -3,7 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Generator
 
-from fastapi import FastAPI, HTTPException, status, Depends, Request
+from fastapi import FastAPI, HTTPException, status, Depends, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, select, or_
 from sqlalchemy.orm import sessionmaker, Session
@@ -119,25 +119,35 @@ async def get_cdn_auth(request: Request):
 @app.get("/api/product", response_model=ProductListWrapper, tags=["Products"])
 def get_all_products(
     q: str | None = None,
+    page: int = Query(1, ge=1, description="Page number, starts at 1"),
+    limit: int = Query(20, le=100, description="Items per page"),
     db: Session = Depends(get_db),
     redis: Redis = Depends(get_redis_client)
 ):
     """
-    Fetches products with Caching.
+    Fetches products with Pagination and Caching.
     """
-    # Define a unique Cache Key based on the query
-    # If q is None, key is "products:all". If q, key is "products:search:{q}"
-    cache_key = f"products:search:{q}" if q else "products:all"
+    # 1. Calculate Offset
+    offset = (page - 1) * limit
 
-    # Get dat from redis if cache found
+    # 2. Define Granular Cache Key
+    # Structure: products:[type]:[query_if_any]:page:[num]:limit:[num]
+    if q:
+        cache_key = f"products:search:{q}:page:{page}:limit:{limit}"
+    else:
+        cache_key = f"products:all:page:{page}:limit:{limit}"
+
+    # 3. Check Redis Cache
     cached_data = redis.get(cache_key)
     if cached_data:
-        # Deserialize JSON string back to Pydantic Model
         return ProductListWrapper.model_validate_json(cached_data)
 
-    # Get data from Turso db
-    logger.info("Cache miss - fetching products from DB")
+    # 4. Query DB (Cache Miss)
+    logger.info(f"Cache miss - fetching page {page} from DB")
+
     stmt = select(ProductDB)
+
+    # Apply Search Filter if 'q' exists
     if q:
         search_filter = f"%{q}%"
         stmt = stmt.where(
@@ -146,13 +156,16 @@ def get_all_products(
                 ProductDB.description.ilike(search_filter)
             )
         )
+
+    # Apply Pagination (Offset & Limit)
+    stmt = stmt.offset(offset).limit(limit)
+
     products = db.scalars(stmt).all()
 
-    # Create the Pydantic wrapper
+    # 5. Create Wrapper & Cache Result
     response_wrapper = ProductListWrapper(data=products)
 
-    # Save db data to Redis (Serialization)
-    # Convert Pydantic model to JSON string and save with 1 hour TTL (3600s)
+    # Serialize and save to Redis (1 hour TTL)
     redis.set(cache_key, response_wrapper.model_dump_json(), ex=3600)
 
     return response_wrapper
@@ -169,9 +182,15 @@ def get_all_products(
     tags=["Products"]
 )
 @requires_auth
-async def post_product(product_data: ProductRequest, request: Request, db: Session = Depends(get_db)):
+async def post_product(
+    product_data: ProductRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    redis: Redis = Depends(get_redis_client)  # Added Redis dependency
+):
     """
     Creates a new product. Auto-links to the authenticated user.
+    Invalidates product cache on success.
     """
     try:
         # 1. Get User Info from Token
@@ -208,6 +227,21 @@ async def post_product(product_data: ProductRequest, request: Request, db: Sessi
         db.add(db_product)
         db.commit()
         db.refresh(db_product)
+
+        # 4. Invalidate Cache
+        # Since a new product affects the main list and potentially any search query,
+        # the safest approach is to clear all product-related cache keys.
+        try:
+            # Find all keys starting with "products:"
+            # Note: In extremely high-traffic Redis instances, SCAN is preferred over KEYS.
+            cache_keys = redis.keys("products:*")
+            if cache_keys:
+                redis.delete(*cache_keys)
+                logger.info(f"Invalidated {
+                            len(cache_keys)} product cache keys.")
+        except Exception as e:
+            # Log error but don't fail the request, as the product is already created
+            logger.error(f"Cache invalidation failed: {e}")
 
         return SingleProductWrapper(
             data=db_product,
