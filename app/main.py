@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     CLERK_ISSUER: str
     GROQ_API_KEY: str  # Include this since it was in your .env and caused an error
 
+    # Frontend URL for CORS
+    FRONTEND_URL: str = "http://localhost:3000"
+
     class Config:
         env_file = ".env"
 
@@ -91,7 +94,7 @@ app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     # Don't use "*" in production if possible
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
