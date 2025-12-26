@@ -1,4 +1,5 @@
 import time
+import os
 import logging
 from contextlib import asynccontextmanager
 from typing import Generator
@@ -94,7 +95,7 @@ app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     # Don't use "*" in production if possible
-    allow_origins=[],
+    allow_origins=[os.environ.get("FRONTEND_URL", settings.FRONTEND_URL)],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
