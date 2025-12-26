@@ -11,8 +11,8 @@ from pydantic_settings import BaseSettings
 
 # Custom imports
 # Import ReviewDB for query
-from lib.models import Base, UserDB, ProductDB, ReviewDB
-from lib.structs import (
+from app.lib.models import Base, UserDB, ProductDB, ReviewDB
+from app.lib.structs import (
     ProductRequest,
     ProductListWrapper,
     SingleProductWrapper,
@@ -22,8 +22,8 @@ from lib.structs import (
     Product,
     Review
 )
-from lib.cache import get_redis_client, Redis
-from lib.auth import requires_auth, require_admin
+from app.lib.cache import get_redis_client, Redis
+from app.lib.auth import requires_auth, require_admin
 from imagekitio import ImageKit
 
 
