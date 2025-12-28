@@ -90,7 +90,11 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown logic (if any) goes here
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    docs_url=None,   # Disable Swagger UI
+    redoc_url=None   # Disable ReDoc
+)
 
 app.add_middleware(
     CORSMiddleware,
