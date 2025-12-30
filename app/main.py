@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, select, or_
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic_settings import BaseSettings
+from redis import Redis  # Changed from redis.asyncio import Redis
 
 # Custom imports
 # Import ReviewDB for query
@@ -23,7 +24,6 @@ from app.lib.structs import (
     Product,
     Review
 )
-from app.lib.cache import get_redis_client, Redis
 from app.lib.auth import requires_auth, require_admin
 from imagekitio import ImageKit
 
@@ -44,6 +44,12 @@ class Settings(BaseSettings):
 
     # Frontend URL for CORS
     FRONTEND_URL: str = "http://localhost:3000"
+
+    # Redis cache
+    REDIS_URL: str
+    REDIS_PORT: str
+    REDIS_USERNAME: str
+    REDIS_PASSWORD: str
 
     class Config:
         env_file = ".env"
@@ -72,8 +78,8 @@ def get_db() -> Generator:
 # --- ImageKit Setup ---
 imagekit = ImageKit(
     private_key=settings.IMAGE_KIT_PRIVATE_KEY,
-    public_key=settings.IMAGE_KIT_PUBLIC_KEY,
-    url_endpoint=settings.IMAGE_KIT_URL
+    # public_key=settings.IMAGE_KIT_PUBLIC_KEY,
+    # url_endpoint=settings.IMAGE_KIT_URL
 )
 
 # --- Lifespan & App Setup ---
@@ -85,15 +91,52 @@ state = {}
 async def lifespan(app: FastAPI):
     # Startup: Initialize DB and capture start time
     state["start_time"] = time.time()
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables verified/created.")
+    try:
+        logger.info("Connecting to Turso Database...")
+        Base.metadata.create_all(bind=engine)
+        logger.info("Turso Database tables verified/created.")
+    except Exception as e:
+        logger.error(f"Turso Database initialization error: {e}")
+
+    # Startup: Check Redis cache connection
+    logger.info("Connecting to Redis cache...")
+    # 1. Initialize Redis ONCE
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+    redis_client = Redis(
+        host=redis_url,
+        port=14027,
+        username=os.getenv("REDIS_USERNAME", "default"),
+        password=os.getenv("REDIS_PASSWORD", ""),
+        decode_responses=True  # Optional: makes output str instead of bytes
+    )
+
+    # 2. Check Connection
+    try:
+        redis_client.ping()  # Removed await, sync call
+        logger.info("Redis cache connected successfully!")
+
+        # 3. Store in App State
+        app.state.redis = redis_client
+    except Exception as e:
+        logger.error(f"Failed to connect to Redis: {e}")
+        # Optional: raise e if you want the app to crash if Redis is down
+
     yield
+
+    # --- SHUTDOWN ---
+    redis_client.close() # Removed await
+    logger.info("Redis connection closed.")
+
+
+def get_redis_client(request: Request):
+    """Dependency: Retreives the persistent Redis client from app state."""
+    return request.app.state.redis
     # Shutdown logic (if any) goes here
 
 app = FastAPI(
     lifespan=lifespan,
-    docs_url=None,   # Disable Swagger UI
-    redoc_url=None   # Disable ReDoc
+    # docs_url=None,   # Disable Swagger UI
+    # redoc_url=None   # Disable ReDoc
 )
 
 app.add_middleware(
@@ -190,7 +233,7 @@ def get_all_products(
     tags=["Products"]
 )
 @requires_auth
-async def post_product(
+def post_product(  # Changed from async def to def
     product_data: ProductRequest,
     request: Request,
     db: Session = Depends(get_db),
