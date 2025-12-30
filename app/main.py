@@ -78,8 +78,8 @@ def get_db() -> Generator:
 # --- ImageKit Setup ---
 imagekit = ImageKit(
     private_key=settings.IMAGE_KIT_PRIVATE_KEY,
-    # public_key=settings.IMAGE_KIT_PUBLIC_KEY,
-    # url_endpoint=settings.IMAGE_KIT_URL
+    public_key=settings.IMAGE_KIT_PUBLIC_KEY,
+    url_endpoint=settings.IMAGE_KIT_URL
 )
 
 # --- Lifespan & App Setup ---
@@ -124,7 +124,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # --- SHUTDOWN ---
-    redis_client.close() # Removed await
+    redis_client.close()  # Removed await
     logger.info("Redis connection closed.")
 
 
@@ -132,6 +132,7 @@ def get_redis_client(request: Request):
     """Dependency: Retreives the persistent Redis client from app state."""
     return request.app.state.redis
     # Shutdown logic (if any) goes here
+
 
 app = FastAPI(
     lifespan=lifespan,
