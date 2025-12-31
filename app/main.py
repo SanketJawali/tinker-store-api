@@ -76,10 +76,9 @@ def get_db() -> Generator:
 
 
 # --- ImageKit Setup ---
+# Updated initialization based on new SDK docs (only private_key required)
 imagekit = ImageKit(
-    private_key=settings.IMAGE_KIT_PRIVATE_KEY,
-    # public_key=settings.IMAGE_KIT_PUBLIC_KEY,
-    # url_endpoint=settings.IMAGE_KIT_URL
+    private_key=settings.IMAGE_KIT_PRIVATE_KEY
 )
 
 # --- Lifespan & App Setup ---
@@ -166,7 +165,8 @@ def system_status():
 @requires_auth
 async def get_cdn_auth(request: Request):
     """Provides auth signature for ImageKit."""
-    return imagekit.get_authentication_parameters()
+    # Updated to use .helper namespace as per new SDK docs
+    return imagekit.helper.get_authentication_parameters()
 
 
 @app.get("/api/product", response_model=ProductListWrapper, tags=["Products"])
