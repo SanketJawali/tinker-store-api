@@ -78,8 +78,8 @@ def get_db() -> Generator:
 # --- ImageKit Setup ---
 imagekit = ImageKit(
     private_key=settings.IMAGE_KIT_PRIVATE_KEY,
-    public_key=settings.IMAGE_KIT_PUBLIC_KEY,
-    url_endpoint=settings.IMAGE_KIT_URL
+    # public_key=settings.IMAGE_KIT_PUBLIC_KEY,
+    # url_endpoint=settings.IMAGE_KIT_URL
 )
 
 # --- Lifespan & App Setup ---
@@ -143,7 +143,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     # Don't use "*" in production if possible
-    allow_origins=[os.environ.get("FRONTEND_URL", settings.FRONTEND_URL)],
+    allow_origins=os.environ.get(
+        "FRONTEND_URL", settings.FRONTEND_URL).split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -234,7 +235,7 @@ def get_all_products(
     tags=["Products"]
 )
 @requires_auth
-def post_product(  # Changed from async def to def
+async def post_product(  # Changed from async def to def
     product_data: ProductRequest,
     request: Request,
     db: Session = Depends(get_db),
@@ -373,6 +374,22 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
 def get_cart():
     """
     Route to get products in cart of a user.
+    """
+    pass
+
+
+@app.post("/api/cart")
+def post_cart():
+    """
+    Route to add products to cart of a user.
+    """
+    pass
+
+
+@app.post("/api/new_review")
+def post_new_review():
+    """
+    Route to add a new review for a product.
     """
     pass
 
