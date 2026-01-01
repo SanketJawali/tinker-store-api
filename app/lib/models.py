@@ -66,3 +66,24 @@ class ReviewDB(Base):
 
     def __repr__(self):
         return f"ReviewDB(id={self.id!r}, rating={self.rating!r}, item_id={self.item_id!r})"
+
+
+class CartDB(Base):
+    __tablename__ = "cart"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    # ForeignKey with index
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+
+    quantity: Mapped[int] = mapped_column(Integer)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now()
+    )
+
+    def __repr__(self):
+        return f"CartDB(id = {self.id!r}, )"
