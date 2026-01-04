@@ -264,7 +264,7 @@ async def post_product(  # Changed from async def to def
                     success=False,
                     message="User email not found in token claims. Ensure 'email' is in session token.",
                     error_code="MISSING_EMAIL"
-                )
+                ).model_dump_json()
             )
 
         # 2. Resolve UserDB ID (Sync logic)
@@ -492,17 +492,17 @@ def post_cart(
                 ).model_dump_json()
             )
 
-        if item_data.quantity == 0:
+        if item_data.quantity <= 0:
             raise HTTPException(
                 status_code=400,
                 detail=APIErrorResponse(
                     success=False,
-                    message="Quantity cannot be zero when adding to cart.",
+                    message="Quantity must be positive when adding to cart.",
                     error_code="INVALID_QUANTITY"
                 ).model_dump_json()
             )
         if item_data.product_id is None:
-            return HTTPException(
+            raise HTTPException(
                 status_code=400,
                 detail=APIErrorResponse(
                     success=False,
@@ -533,9 +533,21 @@ def post_cart(
         target_product_id = item_dict["product_id"]
         qty_to_add = item_dict["quantity"]
 
+        # Ensure the product exists before modifying the cart
+        product = db.get(ProductDB, target_product_id)
+        if product is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=APIErrorResponse(
+                    success=False,
+                    message="Product not found.",
+                    error_code="PRODUCT_NOT_FOUND"
+                ).model_dump_json()
+            )
+
         # Check if item exists in the fetched list
-        existing_cart_item: CartItem = next(
-            (product for product in user_cart_items if product.id == target_product_id),
+        existing_cart_item: CartDB = next(
+            (product for product in user_cart_items if product.product_id == target_product_id),
             None
         )
         logger.info(f"Existing cart item: {existing_cart_item}")
@@ -573,7 +585,7 @@ def post_cart(
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Error occured while adding item to cart: {e}")
+        logger.error(f"Error occurred while adding item to cart: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=APIErrorResponse(
