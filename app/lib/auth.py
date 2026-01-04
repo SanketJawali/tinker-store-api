@@ -1,19 +1,25 @@
 import os
 import jwt
+import logging
+import inspect
+from fastapi.concurrency import run_in_threadpool
 from functools import wraps
 from jwt import PyJWKClient
 from fastapi import Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
+from app.lib.structs import APIErrorResponse
 
 load_dotenv()
+
+logger = logging.getLogger("uvicorn")
 
 # --- Configuration ---
 CLERK_ISSUER = os.getenv("CLERK_ISSUER")
 if not CLERK_ISSUER:
     raise ValueError("CLERK_ISSUER not set in .env file")
 
-JWKS_URL = f"{CLERK_ISSUER}/.well-known/jwks.json"
+JWKS_URL = f"{CLERK_ISSUER.rstrip('/')}/.well-known/jwks.json"
 jwks_client = PyJWKClient(JWKS_URL)
 
 
@@ -34,14 +40,21 @@ def validate_token_logic(token: str):
         return payload
 
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
+        logger.warning(f"JWT Validation Failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(e)
         )
-    except Exception:
+    except Exception as e:
+        logger.error(f"Clerk Auth Internal Error: {type(e).__name__}: {e}")
+        logger.error(f"Failed to fetch JWKS from: {JWKS_URL}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Authentication error"
+            detail=APIErrorResponse(
+                success=False,
+                message=f"Clerk Authentication error: {str(e)}",
+                error_code="CLERK_AUTH_ERROR"
+            ).model_dump_json(),
         )
 
 
@@ -80,7 +93,9 @@ def requires_auth(func):
         except HTTPException as e:
             return JSONResponse({"error": e.detail}, status_code=e.status_code)
 
-        return await func(*args, **kwargs)
+        if inspect.iscoroutinefunction(func):
+            return await func(*args, **kwargs)
+        return await run_in_threadpool(func, *args, **kwargs)
     return wrapper
 
 
@@ -114,5 +129,7 @@ def require_admin(func):
                 status_code=403
             )
 
-        return await func(*args, **kwargs)
+        if inspect.iscoroutinefunction(func):
+            return await func(*args, **kwargs)
+        return await run_in_threadpool(func, *args, **kwargs)
     return wrapper

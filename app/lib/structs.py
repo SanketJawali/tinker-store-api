@@ -32,7 +32,7 @@ class Product(BaseModel):
 
 class Review(BaseModel):
     id: int = Field(..., description="Unique review identifier.")
-    item_id: int = Field(..., description="ID of the associated product.")
+    product_id: int = Field(..., description="ID of the associated product.")
     user_id: int = Field(...,
                          description="ID of the user who wrote the review.")
     rating: conint(ge=1, le=5) = Field(...,
@@ -95,3 +95,40 @@ class ProductDetailsWrapper(BaseModel):
     success: bool = True
     message: str = "Successfully retrieved product and reviews."
     data: ProductInfoWithReviews
+
+
+class NewCartItem(BaseModel):
+    product_id: int = Field(...,
+                            description="ID of the product to add to cart/added to cart.")
+    quantity: int = Field(...,
+                          description="Quantity of the product to add/in cart.")
+
+    class Config:
+        from_attributes = True
+
+
+class NewCartItemWrapper(BaseModel):
+    success: bool = True
+    message: str = "Successfully added item to cart."
+    data: NewCartItem
+
+
+# --- NEW CART RESPONSE MODELS ---
+class CartItem(BaseModel):
+    cart_id: int = Field(...,
+                         description="Unique identifier for the cart entry.")
+    product_id: int = Field(..., description="ID of the product.")
+    name: str = Field(..., description="Product name.")
+    price: int = Field(..., description="Price per unit.")
+    image_url: str = Field(..., description="Product image URL.")
+    category: str = Field(..., description="Product category.")
+    quantity: int = Field(..., description="Quantity in cart.")
+
+    class Config:
+        from_attributes = True
+
+
+class CartListWrapper(BaseModel):
+    success: bool = True
+    message: str = "Successfully retrieved cart items."
+    data: List[CartItem] = []
