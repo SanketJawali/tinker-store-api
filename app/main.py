@@ -353,7 +353,7 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
             )
 
         # 2. Fetch all reviews for that product ID
-        review_stmt = select(ReviewDB).where(ReviewDB.item_id == product_id)
+        review_stmt = select(ReviewDB).where(ReviewDB.product_id == product_id)
         reviews = db.scalars(review_stmt).all()
 
         # 3. Combine product details and reviews into the structured response
@@ -422,7 +422,7 @@ def get_cart(
         # alongside the quantity from the cart.
         stmt = (
             select(CartDB, ProductDB)
-            .join(ProductDB, CartDB.item_id == ProductDB.id)
+            .join(ProductDB, CartDB.product_id == ProductDB.id)
             .where(CartDB.user_id == db_user.id)
         )
 
@@ -510,7 +510,7 @@ def post_cart(
                     error_code="MISSING_PRODUCT_ID"
                 ).model_dump_json()
             )
-        
+
         # 2. Resolve UserDB ID (Sync logic)
         # Check if user exists in our DB
         stmt = select(UserDB).where(UserDB.email == user_email)
@@ -552,9 +552,9 @@ def post_cart(
                 logger.info("Removing existing cart item.")
         else:
             # Create new product entry in cart
-            # We map 'product_id' from request to 'item_id' in DB
+            # We map 'product_id' from request to 'product_id' in DB
             db_cart_item = CartDB(
-                item_id=target_product_id,
+                product_id=target_product_id,
                 quantity=qty_to_add,
                 user_id=db_user.id
             )
