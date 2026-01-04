@@ -32,7 +32,7 @@ class Product(BaseModel):
 
 class Review(BaseModel):
     id: int = Field(..., description="Unique review identifier.")
-    item_id: int = Field(..., description="ID of the associated product.")
+    product_id: int = Field(..., description="ID of the associated product.")
     user_id: int = Field(...,
                          description="ID of the user who wrote the review.")
     rating: conint(ge=1, le=5) = Field(...,
