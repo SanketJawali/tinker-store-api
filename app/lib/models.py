@@ -43,7 +43,8 @@ class ReviewDB(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
     # Foreign Keys with Indexing
-    item_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
 
     rating: Mapped[int] = mapped_column(Integer)
@@ -65,4 +66,30 @@ class ReviewDB(Base):
     # product: Mapped["ProductDB"] = relationship(back_populates="reviews")
 
     def __repr__(self):
-        return f"ReviewDB(id={self.id!r}, rating={self.rating!r}, item_id={self.item_id!r})"
+        return f"ReviewDB(id={self.id!r}, rating={self.rating!r}, product_id={self.product_id!r})"
+
+
+class CartDB(Base):
+    __tablename__ = "cart"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    # ForeignKey with index
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id"), index=True)
+
+    quantity: Mapped[int] = mapped_column(Integer)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now()
+    )
+
+    # Relationships to access the related objects directly
+    user: Mapped["UserDB"] = relationship()
+    product: Mapped["ProductDB"] = relationship()
+
+    def __repr__(self):
+        return f"CartDB(id = {self.id!r}, user_id={self.user_id!r}, product_id={self.product_id!r}, quantity={self.quantity!r})"

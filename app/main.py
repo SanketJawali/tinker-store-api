@@ -2,7 +2,7 @@ import time
 import os
 import logging
 from contextlib import asynccontextmanager
-from typing import Generator
+from typing import Generator, List
 
 from fastapi import FastAPI, HTTPException, status, Depends, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +13,7 @@ from redis import Redis  # Changed from redis.asyncio import Redis
 
 # Custom imports
 # Import ReviewDB for query
-from app.lib.models import Base, UserDB, ProductDB, ReviewDB
+from app.lib.models import Base, UserDB, ProductDB, ReviewDB, CartDB
 from app.lib.structs import (
     ProductRequest,
     ProductListWrapper,
@@ -22,7 +22,11 @@ from app.lib.structs import (
     APIErrorResponse,
     ProductInfoWithReviews,
     Product,
-    Review
+    Review,
+    NewCartItem,
+    NewCartItemWrapper,
+    CartItem,
+    CartListWrapper
 )
 from app.lib.auth import requires_auth, require_admin
 from imagekitio import ImageKit
@@ -256,7 +260,11 @@ async def post_product(  # Changed from async def to def
             # If email is missing in claims, we can't reliably link to UserDB based on your schema
             raise HTTPException(
                 status_code=400,
-                detail="User email not found in token claims. Ensure 'email' is in session token."
+                detail=APIErrorResponse(
+                    success=False,
+                    message="User email not found in token claims. Ensure 'email' is in session token.",
+                    error_code="MISSING_EMAIL"
+                ).model_dump_json()
             )
 
         # 2. Resolve UserDB ID (Sync logic)
@@ -345,7 +353,7 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
             )
 
         # 2. Fetch all reviews for that product ID
-        review_stmt = select(ReviewDB).where(ReviewDB.item_id == product_id)
+        review_stmt = select(ReviewDB).where(ReviewDB.product_id == product_id)
         reviews = db.scalars(review_stmt).all()
 
         # 3. Combine product details and reviews into the structured response
@@ -370,20 +378,211 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
         )
 
 
-@app.get("/api/cart")
-def get_cart():
+@app.get(
+    "/api/cart",
+    response_model=CartListWrapper,
+    tags=["Cart"]
+)
+@requires_auth
+def get_cart(
+    request: Request,
+    db: Session = Depends(get_db)
+):
     """
     Route to get products in cart of a user.
     """
-    pass
+    try:
+        # 1. Get User Info from Token
+        user_claims = request.state.user
+        user_email = user_claims.get("email")
+
+        if not user_email:
+            raise HTTPException(
+                status_code=400,
+                detail=APIErrorResponse(
+                    success=False,
+                    message="User email not found in token claims.",
+                    error_code="MISSING_EMAIL"
+                ).model_dump_json()
+            )
+
+        # 2. Resolve UserDB ID
+        stmt = select(UserDB).where(UserDB.email == user_email)
+        db_user = db.scalars(stmt).first()
+
+        if not db_user:
+            # If user doesn't exist in DB yet, return empty list
+            return CartListWrapper(
+                data=[],
+                message="Cart is empty."
+            )
+
+        # 3. Fetch cart items joined with Product details
+        # We join CartDB and ProductDB to get the product info (name, price, image)
+        # alongside the quantity from the cart.
+        stmt = (
+            select(CartDB, ProductDB)
+            .join(ProductDB, CartDB.product_id == ProductDB.id)
+            .where(CartDB.user_id == db_user.id)
+        )
+
+        results = db.execute(stmt).all()
+
+        # 4. Format the response using the CartItem model
+        cart_items: List[CartItem] = []
+        for cart_entry, product_entry in results:
+            cart_items.append(CartItem(
+                cart_id=cart_entry.id,
+                product_id=product_entry.id,
+                name=product_entry.name,
+                price=product_entry.price,
+                image_url=product_entry.image_url,
+                category=product_entry.category,
+                quantity=cart_entry.quantity
+            ))
+
+        return CartListWrapper(
+            data=cart_items,
+            message="Cart retrieved successfully."
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching cart: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=APIErrorResponse(
+                success=False,
+                message="An unexpected server error occurred while fetching cart.",
+                error_code="SERVER_FETCH_CART"
+            ).model_dump_json(),
+            headers={"Content-Type": "application/json"}
+        )
 
 
-@app.post("/api/cart")
-def post_cart():
+@app.post(
+    "/api/cart",
+    response_model=NewCartItemWrapper,
+    tags=["Cart"]
+)
+@requires_auth
+def post_cart(
+    request: Request,
+    item_data: NewCartItem,
+    db: Session = Depends(get_db),
+):
     """
     Route to add products to cart of a user.
     """
-    pass
+    try:
+        # 1. Get User Info from Token
+        user_claims = request.state.user
+        # Prefer email, fallback to sub (Clerk ID) if email is missing
+        user_email = user_claims.get("email")
+        user_name = user_claims.get("name") or "Unknown User"
+
+        if not user_email:
+            raise HTTPException(
+                status_code=400,
+                detail=APIErrorResponse(
+                    success=False,
+                    message="User email not found in token claims.",
+                    error_code="MISSING_EMAIL"
+                ).model_dump_json()
+            )
+
+        if item_data.quantity == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=APIErrorResponse(
+                    success=False,
+                    message="Quantity cannot be zero when adding to cart.",
+                    error_code="INVALID_QUANTITY"
+                ).model_dump_json()
+            )
+        if item_data.product_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail=APIErrorResponse(
+                    success=False,
+                    message="Product ID must be provided when adding to cart.",
+                    error_code="MISSING_PRODUCT_ID"
+                ).model_dump_json()
+            )
+
+        # 2. Resolve UserDB ID (Sync logic)
+        # Check if user exists in our DB
+        stmt = select(UserDB).where(UserDB.email == user_email)
+        db_user = db.scalars(stmt).first()
+
+        if not db_user:
+            # Lazy Sync: Create user if they don't exist locally
+            logger.info(f"Creating new local user for {user_email}")
+            db_user = UserDB(name=user_name, email=user_email)
+            db.add(db_user)
+            db.commit()
+            db.refresh(db_user)
+
+        # 3. Fetch cart details of the user
+        user_cart_stmt = select(CartDB).where(CartDB.user_id == db_user.id)
+        user_cart_items = db.scalars(user_cart_stmt).all()
+
+        # 4. Updating the user cart in db
+        item_dict = item_data.model_dump()
+        target_product_id = item_dict["product_id"]
+        qty_to_add = item_dict["quantity"]
+
+        # Check if item exists in the fetched list
+        existing_cart_item: CartItem = next(
+            (product for product in user_cart_items if product.id == target_product_id),
+            None
+        )
+        logger.info(f"Existing cart item: {existing_cart_item}")
+
+        if existing_cart_item is not None:
+            # Update existing item quantity
+            # NOTE: SQLAlchemy tracks changes on attached objects automatically
+            existing_cart_item.quantity += qty_to_add
+            logger.info("Updating existing cart item quantity.")
+
+            if existing_cart_item.quantity <= 0:
+                # Remove item if quantity is zero or negative
+                db.delete(existing_cart_item)
+                logger.info("Removing existing cart item.")
+        else:
+            # Create new product entry in cart
+            # We map 'product_id' from request to 'product_id' in DB
+            db_cart_item = CartDB(
+                product_id=target_product_id,
+                quantity=qty_to_add,
+                user_id=db_user.id
+            )
+            db.add(db_cart_item)
+            logger.info(f"Adding new cart item: {db_cart_item}")
+
+        db.commit()
+
+        return NewCartItemWrapper(
+            data=item_data,
+            message="Item added to cart successfully."
+        )
+
+    except HTTPException as e:
+        logger.error(f"HTTP error while adding item to cart: {e.detail}")
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error occured while adding item to cart: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=APIErrorResponse(
+                success=False,
+                message="An unexpected server error occurred while adding item to cart.",
+                error_code="SERVER_ADD_CART_ERROR"
+            ).model_dump_json(),
+            headers={"Content-Type": "application/json"}
+        )
 
 
 @app.post("/api/new_review")
