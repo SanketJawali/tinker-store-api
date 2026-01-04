@@ -101,7 +101,6 @@ class NewCartItem(BaseModel):
     product_id: int = Field(...,
                             description="ID of the product to add to cart/added to cart.")
     quantity: int = Field(...,
-                          ge=1,
                           description="Quantity of the product to add/in cart.")
 
     class Config:

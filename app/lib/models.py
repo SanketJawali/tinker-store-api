@@ -43,7 +43,7 @@ class ReviewDB(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
     # Foreign Keys with Indexing
-    item_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
 
     rating: Mapped[int] = mapped_column(Integer)
@@ -85,5 +85,9 @@ class CartDB(Base):
         onupdate=func.now()
     )
 
+    # Relationships to access the related objects directly
+    user: Mapped["UserDB"] = relationship()
+    product: Mapped["ProductDB"] = relationship()
+
     def __repr__(self):
-        return f"CartDB(id = {self.id!r}, )"
+        return f"CartDB(id = {self.id!r}, user_id={self.user_id!r}, item_id={self.item_id!r}, quantity={self.quantity!r})"

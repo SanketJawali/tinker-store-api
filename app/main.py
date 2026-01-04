@@ -492,6 +492,25 @@ def post_cart(
                 ).model_dump_json()
             )
 
+        if item_data.quantity == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=APIErrorResponse(
+                    success=False,
+                    message="Quantity cannot be zero when adding to cart.",
+                    error_code="INVALID_QUANTITY"
+                ).model_dump_json()
+            )
+        if item_data.product_id is None:
+            return HTTPException(
+                status_code=400,
+                detail=APIErrorResponse(
+                    success=False,
+                    message="Product ID must be provided when adding to cart.",
+                    error_code="MISSING_PRODUCT_ID"
+                ).model_dump_json()
+            )
+        
         # 2. Resolve UserDB ID (Sync logic)
         # Check if user exists in our DB
         stmt = select(UserDB).where(UserDB.email == user_email)
@@ -515,16 +534,22 @@ def post_cart(
         qty_to_add = item_dict["quantity"]
 
         # Check if item exists in the fetched list
-        # We assume CartDB uses 'item_id' to store the product ID, consistent with ReviewDB
-        existing_cart_item = next(
-            (item for item in user_cart_items if item.item_id == target_product_id),
+        existing_cart_item: CartItem = next(
+            (product for product in user_cart_items if product.id == target_product_id),
             None
         )
+        logger.info(f"Existing cart item: {existing_cart_item}")
 
-        if existing_cart_item:
+        if existing_cart_item is not None:
             # Update existing item quantity
             # NOTE: SQLAlchemy tracks changes on attached objects automatically
             existing_cart_item.quantity += qty_to_add
+            logger.info("Updating existing cart item quantity.")
+
+            if existing_cart_item.quantity <= 0:
+                # Remove item if quantity is zero or negative
+                db.delete(existing_cart_item)
+                logger.info("Removing existing cart item.")
         else:
             # Create new product entry in cart
             # We map 'product_id' from request to 'item_id' in DB
@@ -534,6 +559,7 @@ def post_cart(
                 user_id=db_user.id
             )
             db.add(db_cart_item)
+            logger.info(f"Adding new cart item: {db_cart_item}")
 
         db.commit()
 
