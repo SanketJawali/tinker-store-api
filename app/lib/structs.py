@@ -98,6 +98,8 @@ class ProductDetailsWrapper(BaseModel):
 
 
 class NewCartItem(BaseModel):
+    cart_id: Optional[int] = Field(
+        None, description="Unique identifier for the cart entry.")
     product_id: int = Field(...,
                             description="ID of the product to add to cart/added to cart.")
     quantity: int = Field(...,

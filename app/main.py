@@ -473,7 +473,7 @@ def post_cart(
     db: Session = Depends(get_db),
 ):
     """
-    Route to add products to cart of a user.
+    Route to add or update products in cart of a user.
     """
     try:
         # 1. Get User Info from Token
@@ -511,6 +511,20 @@ def post_cart(
                 ).model_dump_json()
             )
 
+        # Check if the product exists in the DB before linking it.
+        # This prevents "FOREIGN KEY constraint failed" errors.
+        product_check = db.get(ProductDB, item_data.product_id)
+        if not product_check:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=APIErrorResponse(
+                    success=False,
+                    message=f"Product with ID {
+                        item_data.product_id} not found.",
+                    error_code="PRODUCT_NOT_FOUND"
+                ).model_dump_json()
+            )
+
         # 2. Resolve UserDB ID (Sync logic)
         # Check if user exists in our DB
         stmt = select(UserDB).where(UserDB.email == user_email)
@@ -524,42 +538,54 @@ def post_cart(
             db.commit()
             db.refresh(db_user)
 
-        # 3. Fetch cart details of the user
-        user_cart_stmt = select(CartDB).where(CartDB.user_id == db_user.id)
-        user_cart_items = db.scalars(user_cart_stmt).all()
-
-        # 4. Updating the user cart in db
+        # 3. Update Cart Logic
         item_dict = item_data.model_dump()
         target_product_id = item_dict["product_id"]
         qty_to_add = item_dict["quantity"]
+        # Safe access if model updated
+        target_cart_id = getattr(item_data, "cart_id", None)
 
-        # Check if item exists in the fetched list
-        existing_cart_item: CartItem = next(
-            (product for product in user_cart_items if product.id == target_product_id),
-            None
-        )
-        logger.info(f"Existing cart item: {existing_cart_item}")
+        existing_cart_item = None
 
+        # Case A: Cart ID provided - Direct lookup
+        if target_cart_id:
+            existing_cart_item = db.get(CartDB, target_cart_id)
+
+            # Security ensure item belongs to user and matches product
+            if existing_cart_item:
+                if existing_cart_item.user_id != db_user.id:
+                    # Don't reveal existence to unauthorized user
+                    existing_cart_item = None
+                elif existing_cart_item.product_id != target_product_id:
+                    # Mismatch between cart ID and product ID provided
+                    existing_cart_item = None
+
+        # Case B: No Cart ID OR Direct lookup failed/invalid - Fallback to search by Product ID
+        if existing_cart_item is None:
+            user_cart_stmt = select(CartDB).where(
+                CartDB.user_id == db_user.id,
+                CartDB.product_id == target_product_id
+            )
+            existing_cart_item = db.scalars(user_cart_stmt).first()
+
+        # 4. Perform Update or Insert
         if existing_cart_item is not None:
             # Update existing item quantity
             # NOTE: SQLAlchemy tracks changes on attached objects automatically
             existing_cart_item.quantity += qty_to_add
-            logger.info("Updating existing cart item quantity.")
 
             if existing_cart_item.quantity <= 0:
                 # Remove item if quantity is zero or negative
                 db.delete(existing_cart_item)
-                logger.info("Removing existing cart item.")
         else:
             # Create new product entry in cart
-            # We map 'product_id' from request to 'product_id' in DB
-            db_cart_item = CartDB(
-                product_id=target_product_id,
-                quantity=qty_to_add,
-                user_id=db_user.id
-            )
-            db.add(db_cart_item)
-            logger.info(f"Adding new cart item: {db_cart_item}")
+            if qty_to_add > 0:
+                db_cart_item = CartDB(
+                    product_id=target_product_id,
+                    quantity=qty_to_add,
+                    user_id=db_user.id
+                )
+                db.add(db_cart_item)
 
         db.commit()
 
