@@ -26,7 +26,10 @@ from app.lib.structs import (
     NewCartItem,
     NewCartItemWrapper,
     CartItem,
-    CartListWrapper
+    CartListWrapper,
+    ReviewRequest,
+    ReviewResponseWrapper,
+    ReviewResponse
 )
 from app.lib.auth import requires_auth, require_admin
 from imagekitio import ImageKit
@@ -611,12 +614,91 @@ def post_cart(
         )
 
 
-@app.post("/api/new_review")
-def post_new_review():
+@app.post("/api/review",
+          response_model=ReviewResponseWrapper,
+          tags=["Review"]
+          )
+@requires_auth
+def post_review(
+    request: Request,
+    review: ReviewRequest,
+    db: Session = Depends(get_db),
+):
     """
     Route to add a new review for a product.
     """
-    pass
+    try:
+        user_claims = request.state.user
+        user_email = user_claims.get("email")
+        user_name = user_claims.get("name") or "Unknown User"
+
+        if not user_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=APIErrorResponse(
+                    success=False,
+                    message="User email not found in token claims.",
+                    error_code="MISSING_EMAIL",
+                ).model_dump_json(),
+                headers={"Content-Type": "application/json"},
+            )
+
+        # Ensure product exists before creating review
+        product_id = getattr(review, "product_id", None)
+        if product_id is None or db.get(ProductDB, product_id) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=APIErrorResponse(
+                    success=False,
+                    message=f"Product with id {product_id} not found.",
+                    error_code="PRODUCT_NOT_FOUND",
+                ).model_dump_json(),
+                headers={"Content-Type": "application/json"},
+            )
+
+        # Resolve/create local user
+        stmt = select(UserDB).where(UserDB.email == user_email)
+        db_user = db.scalars(stmt).first()
+        if not db_user:
+            # Lazy Sync: Create user if they don't exist locally
+            logger.info(f"Creating new local user for {user_email}")
+            db_user = UserDB(name=user_name, email=user_email)
+            db.add(db_user)
+            db.commit()
+            db.refresh(db_user)
+
+        review_data = review.model_dump()
+        review_data["user_id"] = db_user.id
+        # logger.info(f"Creating review {review_data}")
+
+        # Create and persist review
+        db_review = ReviewDB(**review_data)
+        db.add(db_review)
+
+        # Flush sends INSERT so PK gets generated/populated on db_review.id
+        db.flush()
+
+        db.commit()
+        db.refresh(db_review)
+
+        return ReviewResponseWrapper(
+            # Prefer validating from the ORM object (requires from_attributes=True on the Pydantic model)
+            data=ReviewResponse.model_validate(db_review),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=APIErrorResponse(
+                success=False,
+                message=f"Error occured while processing review: {e}",
+                error_code="REVIEW_PROCESSING_ERROR",
+            ).model_dump_json(),
+            headers={"Content-Type": "application/json"},
+        )
 
 
 @app.post("/api/contact")

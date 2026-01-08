@@ -37,8 +37,8 @@ class Review(BaseModel):
                          description="ID of the user who wrote the review.")
     rating: conint(ge=1, le=5) = Field(...,
                                        description="The product rating (1 to 5).")
-    review_text: str = Field(..., max_length=1000,
-                             description="The content of the review.")
+    content: str = Field(..., max_length=1000,
+                         description="The content of the review.")
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -60,8 +60,40 @@ class ProductRequest(BaseModel):
         from_attributes = True
 
 
+class ReviewRequest(BaseModel):
+    product_id: int = Field(..., description="ID of the associated product.")
+    title: str = Field(..., max_length=200, description="Title of the review.")
+    rating: int = Field(..., ge=1, le=5, description="Rating between 1 and 5.")
+    content: str = Field(..., max_length=1000,
+                         description="Content of the review.")
+
+
+class ReviewResponse(BaseModel):
+    id: int = Field(..., description="Unique review identifier.")
+    title: str = Field(..., max_length=200, description="Title of the review")
+    rating: int = Field(..., ge=1, le=5, description="Rating between 1 and 5.")
+    content: str = Field(..., max_length=1000,
+                         description="Content of the review.")
+
+    class Config:
+        from_attributes = True
+
+
+class CartItem(BaseModel):
+    cart_id: int = Field(...,
+                         description="Unique identifier for the cart entry.")
+    product_id: int = Field(..., description="ID of the product.")
+    name: str = Field(..., description="Product name.")
+    price: int = Field(..., description="Price per unit.")
+    image_url: str = Field(..., description="Product image URL.")
+    category: str = Field(..., description="Product category.")
+    quantity: int = Field(..., description="Quantity in cart.")
+
+    class Config:
+        from_attributes = True
+
+
 # --- GENERAL RESPONSE STRUCTURES ---
-# 1. Standard Error Response Structure
 class APIErrorResponse(BaseModel):
     success: bool = Field(
         False, description="Always False for error responses.")
@@ -116,21 +148,14 @@ class NewCartItemWrapper(BaseModel):
 
 
 # --- NEW CART RESPONSE MODELS ---
-class CartItem(BaseModel):
-    cart_id: int = Field(...,
-                         description="Unique identifier for the cart entry.")
-    product_id: int = Field(..., description="ID of the product.")
-    name: str = Field(..., description="Product name.")
-    price: int = Field(..., description="Price per unit.")
-    image_url: str = Field(..., description="Product image URL.")
-    category: str = Field(..., description="Product category.")
-    quantity: int = Field(..., description="Quantity in cart.")
-
-    class Config:
-        from_attributes = True
-
 
 class CartListWrapper(BaseModel):
     success: bool = True
     message: str = "Successfully retrieved cart items."
     data: List[CartItem] = []
+
+
+class ReviewResponseWrapper(BaseModel):
+    succcess: bool = True
+    message: str = "Successfully added new review."
+    data: ReviewResponse
