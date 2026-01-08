@@ -48,7 +48,8 @@ class ReviewDB(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
 
     rating: Mapped[int] = mapped_column(Integer)
-    review_text: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(String(200))
+    content: Mapped[str] = mapped_column(Text)
 
     # Timestamps with automatic database defaults
     created_at: Mapped[datetime] = mapped_column(
