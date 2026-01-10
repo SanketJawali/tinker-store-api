@@ -13,23 +13,21 @@ from redis import Redis  # Changed from redis.asyncio import Redis
 
 # Custom imports
 # Import ReviewDB for query
-from app.lib.models import Base, UserDB, ProductDB, ReviewDB, CartDB
-from app.lib.structs import (
-    ProductRequest,
+from app.lib.models import Base, UserDB, ProductDB, ReviewDB, CartDB, OrderDB, OrderItemDB
+from app.lib.base_models import Product, Review, CartItem, OrderSummary, User
+from app.lib.request_models import ProductRequest, ReviewRequest, CheckoutRequest
+from app.lib.response_models import (
     ProductListWrapper,
     SingleProductWrapper,
     ProductDetailsWrapper,
     APIErrorResponse,
     ProductInfoWithReviews,
-    Product,
-    Review,
     NewCartItem,
     NewCartItemWrapper,
-    CartItem,
     CartListWrapper,
-    ReviewRequest,
+    ReviewResponse,
     ReviewResponseWrapper,
-    ReviewResponse
+    CheckoutResponse
 )
 from app.lib.auth import requires_auth, require_admin
 from imagekitio import ImageKit
@@ -701,10 +699,167 @@ def post_review(
         )
 
 
-@app.post("/api/contact")
-def post_contact():
+@app.post(
+    "/api/checkout",
+    response_model=CheckoutResponse,
+    tags=["Checkout"]
+)
+@requires_auth
+def checkout(
+    request: Request,
+    checkout_data: CheckoutRequest,
+    db: Session = Depends(get_db),
+):
     """
-    Route to handle the contact messages.
-    Forwards the contact messages to the Developer's email.
+    Finalizes the authenticated user's cart into an order.
     """
-    pass
+    try:
+        user_claims = request.state.user
+        user_email = user_claims.get("email")
+
+        # 1. Fetch User Record
+        stmt = select(UserDB).where(UserDB.email == user_email)
+        db_user = db.scalars(stmt).first()
+
+        if not db_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=APIErrorResponse(
+                    success=False,
+                    message="User not found.",
+                    error_code="USER_NOT_FOUND"
+                ).model_dump_json()
+            )
+
+        # 2. Fetch Cart Items
+        cart_stmt = select(CartDB).where(CartDB.user_id == db_user.id)
+        cart_items = db.scalars(cart_stmt).all()
+
+        if not cart_items:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=APIErrorResponse(
+                    success=False,
+                    message="Cart is empty.",
+                    error_code="EMPTY_CART"
+                ).model_dump_json()
+            )
+
+        # 3. Validate and Calculate Totals
+        total_amount = 0
+        order_items_data = []
+
+        for item in cart_items:
+            if item.quantity <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=APIErrorResponse(
+                        success=False,
+                        message=f"Invalid quantity for product {
+                            item.product_id}.",
+                        error_code="INVALID_QUANTITY"
+                    ).model_dump_json()
+                )
+
+            # Check Product
+            product = db.get(ProductDB, item.product_id)
+            if not product:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=APIErrorResponse(
+                        success=False,
+                        message=f"Product with ID {
+                            item.product_id} no longer exists.",
+                        error_code="PRODUCT_NOT_FOUND"
+                    ).model_dump_json()
+                )
+
+            if product.stock < item.quantity:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=APIErrorResponse(
+                        success=False,
+                        message=f"Insufficient stock for product '{product.name}'. Available: {
+                            product.stock}, Requested: {item.quantity}",
+                        error_code="INSUFFICIENT_STOCK"
+                    ).model_dump_json()
+                )
+
+            # Accumulate Data
+            price = product.price
+            total_amount += price * item.quantity
+
+            order_items_data.append({
+                "product": product,
+                "quantity": item.quantity,
+                "price": price
+            })
+
+        # 4. Create Order
+        new_order = OrderDB(
+            user_id=db_user.id,
+            customer_name=checkout_data.name,
+            customer_address=checkout_data.address,
+            customer_phone=checkout_data.phone,
+            payment_method=checkout_data.payment_method,
+            total_amount=total_amount,
+            status="completed"
+        )
+        db.add(new_order)
+        db.flush()
+
+        # 5. Create Order Items & Update Stock
+        for item_data in order_items_data:
+            product = item_data["product"]
+            quantity = item_data["quantity"]
+            price_at_purchase = item_data["price"]
+
+            # Decrease Stock
+            product.stock -= quantity
+            db.add(product)
+
+            # Create Order Item
+            order_item = OrderItemDB(
+                order_id=new_order.id,
+                product_id=product.id,
+                quantity=quantity,
+                price_at_purchase=price_at_purchase
+            )
+            db.add(order_item)
+
+        # 6. Clear Cart
+        for item in cart_items:
+            db.delete(item)
+
+        # 7. Commit
+        db.commit()
+        db.refresh(new_order)
+
+        # Calculate item count for summary
+        item_count = sum(item["quantity"] for item in order_items_data)
+
+        summary = OrderSummary(
+            order_id=new_order.id,
+            total_amount=new_order.total_amount,
+            item_count=item_count,
+            created_at=new_order.created_at
+        )
+
+        return CheckoutResponse(
+            data=summary
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Checkout error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=APIErrorResponse(
+                success=False,
+                message="An unexpected error occurred during checkout.",
+                error_code="CHECKOUT_ERROR"
+            ).model_dump_json(),
+            headers={"Content-Type": "application/json"}
+        )

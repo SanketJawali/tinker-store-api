@@ -1,5 +1,6 @@
 from sqlalchemy import Integer, String, ForeignKey, Text, DateTime, func
 from sqlalchemy.orm import declarative_base, relationship, Mapped, mapped_column
+from typing import List
 from datetime import datetime
 
 Base = declarative_base()
@@ -94,3 +95,54 @@ class CartDB(Base):
 
     def __repr__(self):
         return f"CartDB(id = {self.id!r}, user_id={self.user_id!r}, product_id={self.product_id!r}, quantity={self.quantity!r})"
+
+
+class OrderDB(Base):
+    __tablename__ = "orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+
+    # Store snapshot of customer info at time of purchase
+    customer_name: Mapped[str] = mapped_column(String(100))
+    customer_address: Mapped[str] = mapped_column(Text)
+    customer_phone: Mapped[str] = mapped_column(String(20))
+    payment_method: Mapped[str] = mapped_column(String(50))
+
+    # In cents/lowest unit as per ProductDB price
+    total_amount: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(50), default="pending")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now()
+    )
+
+    # Relationships
+    items: Mapped[List["OrderItemDB"]] = relationship(
+        back_populates="order", cascade="all, delete-orphan")
+    user: Mapped["UserDB"] = relationship()
+
+    def __repr__(self):
+        return (f"OrderDB(id={self.id!r}, user_id={self.user_id!r}, "
+                f"total={self.total_amount!r}, status={self.status!r})")
+
+
+class OrderItemDB(Base):
+    __tablename__ = "order_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), index=True)
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id"), index=True)
+
+    quantity: Mapped[int] = mapped_column(Integer)
+    # Snapshot of price
+    price_at_purchase: Mapped[int] = mapped_column(Integer)
+
+    order: Mapped["OrderDB"] = relationship(back_populates="items")
+    product: Mapped["ProductDB"] = relationship()
+
+    def __repr__(self):
+        return (f"OrderItemDB(id={self.id!r}, order_id={self.order_id!r}, "
+                f"product_id={self.product_id!r}, quantity={self.quantity!r})")
