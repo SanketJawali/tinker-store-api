@@ -159,3 +159,27 @@ class ReviewResponseWrapper(BaseModel):
     succcess: bool = True
     message: str = "Successfully added new review."
     data: ReviewResponse
+
+
+class CheckoutRequest(BaseModel):
+    name: str = Field(..., max_length=100, description="Customer full name.")
+    address: str = Field(..., description="Shipping address.")
+    phone: str = Field(..., max_length=20, description="Contact phone number.")
+    payment_method: str = Field(..., max_length=50,
+                                description="Payment method (e.g., 'credit_card', 'paypal').")
+
+
+class OrderSummary(BaseModel):
+    order_id: int = Field(..., description="Unique identifier for the order.")
+    total_amount: int = Field(..., description="Total order amount.")
+    item_count: int = Field(..., description="Total number of items in order.")
+    created_at: datetime = Field(..., description="Timestamp when order was created.")
+
+    class Config:
+        from_attributes = True
+
+
+class CheckoutResponse(BaseModel):
+    success: bool = True
+    message: str = "Order placed successfully."
+    data: OrderSummary
