@@ -6,7 +6,7 @@ from typing import Generator, List
 
 from fastapi import FastAPI, HTTPException, status, Depends, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, select, or_
+from sqlalchemy import create_engine, select, or_, text
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic_settings import BaseSettings
 from redis import Redis  # Changed from redis.asyncio import Redis
@@ -30,6 +30,12 @@ from app.lib.response_models import (
     CheckoutResponse
 )
 from app.lib.auth import requires_auth, require_admin
+from app.lib.observability import (
+    record_cache_hit,
+    record_cache_miss,
+    get_cache_metrics,
+    log_cache_hit_rate,
+)
 from imagekitio import ImageKit
 
 
@@ -157,12 +163,50 @@ app.add_middleware(
 
 # --- Routes ---
 @app.get("/")
-def system_status():
+def system_status(request: Request, db: Session = Depends(get_db)):
     """Display system status and uptime."""
     uptime = round(time.time() - state.get("start_time", time.time()))
+
+    # --- DB health ---
+    db_ok = False
+    db_error = None
+    try:
+        db.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception as e:
+        db_error = str(e)
+
+    # --- Cache health ---
+    cache_ok = False
+    cache_error = None
+    redis = getattr(request.app.state, "redis", None)
+    if redis is None:
+        cache_error = "Redis client not initialized"
+    else:
+        try:
+            redis.ping()
+            cache_ok = True
+        except Exception as e:
+            cache_error = str(e)
+
+    cache_metrics = get_cache_metrics()
+    log_cache_hit_rate(logger)
+
     return {
         "status": "ok",
         "uptime_seconds": uptime,
+        "database": {
+            "ok": db_ok,
+            "error": db_error,
+        },
+        "cache": {
+            "ok": cache_ok,
+            "error": cache_error,
+            "hits": cache_metrics["hits"],
+            "misses": cache_metrics["misses"],
+            "total": cache_metrics["total"],
+            "hit_rate_pct": cache_metrics["hit_rate_pct"],
+        },
     }
 
 
@@ -198,7 +242,10 @@ def get_all_products(
     # 3. Check Redis Cache
     cached_data = redis.get(cache_key)
     if cached_data:
+        record_cache_hit()
         return ProductListWrapper.model_validate_json(cached_data)
+
+    record_cache_miss()
 
     # 4. Query DB (Cache Miss)
     logger.info(f"Cache miss - fetching page {page} from DB")
@@ -334,11 +381,29 @@ async def post_product(  # Changed from async def to def
     },
     tags=["Products"]
 )
-def get_product(product_id: int, db: Session = Depends(get_db)):
+def get_product(
+    product_id: int,
+    db: Session = Depends(get_db),
+    redis: Redis = Depends(get_redis_client),
+):
     """
     Route to get details of a single product and its reviews.
     """
     try:
+        cache_key = f"product:{product_id}:details"
+
+        cached_data = None
+        try:
+            cached_data = redis.get(cache_key)
+        except Exception as e:
+            logger.warning(f"Redis get failed for {cache_key}: {e}")
+
+        if cached_data:
+            record_cache_hit()
+            return ProductDetailsWrapper.model_validate_json(cached_data)
+
+        record_cache_miss()
+
         # 1. Fetch the single product
         product = db.get(ProductDB, product_id)
 
@@ -358,10 +423,17 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
         reviews = db.scalars(review_stmt).all()
 
         # 3. Combine product details and reviews into the structured response
-        return ProductDetailsWrapper(
+        response_wrapper = ProductDetailsWrapper(
             data=ProductInfoWithReviews(product=product, reviews=reviews),
             message=f"Product {product_id} retrieved successfully."
         )
+
+        try:
+            redis.set(cache_key, response_wrapper.model_dump_json(), ex=3600)
+        except Exception as e:
+            logger.warning(f"Redis set failed for {cache_key}: {e}")
+
+        return response_wrapper
 
     except HTTPException:
         # Re-raise explicit HTTPExceptions (like the 404 above)
@@ -621,6 +693,7 @@ def post_review(
     request: Request,
     review: ReviewRequest,
     db: Session = Depends(get_db),
+    redis: Redis = Depends(get_redis_client),
 ):
     """
     Route to add a new review for a product.
@@ -678,6 +751,12 @@ def post_review(
 
         db.commit()
         db.refresh(db_review)
+
+        # Invalidate product detail cache so new review shows up.
+        try:
+            redis.delete(f"product:{product_id}:details")
+        except Exception as e:
+            logger.warning(f"Cache invalidation failed for product {product_id}: {e}")
 
         return ReviewResponseWrapper(
             # Prefer validating from the ORM object (requires from_attributes=True on the Pydantic model)
