@@ -146,8 +146,8 @@ def get_redis_client(request: Request):
 
 app = FastAPI(
     lifespan=lifespan,
-    # docs_url=None,   # Disable Swagger UI
-    # redoc_url=None   # Disable ReDoc
+    docs_url=None,   # Disable Swagger UI
+    redoc_url=None   # Disable ReDoc
 )
 
 app.add_middleware(
@@ -756,7 +756,8 @@ def post_review(
         try:
             redis.delete(f"product:{product_id}:details")
         except Exception as e:
-            logger.warning(f"Cache invalidation failed for product {product_id}: {e}")
+            logger.warning(f"Cache invalidation failed for product {
+                           product_id}: {e}")
 
         return ReviewResponseWrapper(
             # Prefer validating from the ORM object (requires from_attributes=True on the Pydantic model)
