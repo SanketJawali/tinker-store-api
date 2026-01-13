@@ -4,7 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Generator, List
 
-from fastapi import FastAPI, HTTPException, status, Depends, Request, Query
+from fastapi import FastAPI, HTTPException, status, Depends, Request, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, select, or_, text
 from sqlalchemy.orm import sessionmaker, Session
@@ -36,6 +36,7 @@ from app.lib.observability import (
     get_cache_metrics,
     log_cache_hit_rate,
 )
+from app.lib.email_resend import send_order_confirmation_email
 from imagekitio import ImageKit
 
 
@@ -61,6 +62,16 @@ class Settings(BaseSettings):
     REDIS_PORT: str
     REDIS_USERNAME: str
     REDIS_PASSWORD: str
+
+    # Email configuration
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str
+    
+    # Email configuration (Resend - preferred for custom domains)
+    RESEND_API_KEY: str = ""
 
     class Config:
         env_file = ".env"
@@ -788,10 +799,12 @@ def post_review(
 def checkout(
     request: Request,
     checkout_data: CheckoutRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """
     Finalizes the authenticated user's cart into an order.
+    Sends order confirmation email in the background.
     """
     try:
         user_claims = request.state.user
@@ -923,6 +936,32 @@ def checkout(
             total_amount=new_order.total_amount,
             item_count=item_count,
             created_at=new_order.created_at
+        )
+
+        # Queue background task to send order confirmation email
+        order_items_for_email = [
+            {
+                "name": item["product"].name,
+                "quantity": item["quantity"],
+                "price": item["price"]
+            }
+            for item in order_items_data
+        ]
+        
+        background_tasks.add_task(
+            send_order_confirmation_email,
+            to_email=user_email,
+            customer_name=checkout_data.name,
+            order_id=new_order.id,
+            total_amount=new_order.total_amount,
+            item_count=item_count,
+            order_items=order_items_for_email,
+            smtp_host=settings.SMTP_HOST,
+            smtp_port=settings.SMTP_PORT,
+            smtp_user=settings.SMTP_USER,
+            smtp_password=settings.SMTP_PASSWORD,
+            from_email=settings.SMTP_FROM_EMAIL,
+            resend_api_key=settings.RESEND_API_KEY or None
         )
 
         return CheckoutResponse(
