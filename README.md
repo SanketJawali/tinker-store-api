@@ -1,8 +1,10 @@
-# TinkerStore Backend API Documentation
+# [TinkerStore](https://tinkerstore.tech/) Backend API Documentation
 
 This document describes the **current implementation** of the TinkerStore backend API, including request flow, authentication behavior, caching strategy, and error handling.
 
 The backend is built with **FastAPI**, persists data in **Turso (SQLite)** via SQLAlchemy ORM, uses **Redis** for caching, and integrates **Clerk** for authentication and **ImageKit** for media uploads.
+
+[Frontend Repository](https://github.com/SanketJawali/tinker-store-frontend)
 
 ---
 
