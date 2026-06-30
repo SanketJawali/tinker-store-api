@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_FROM_EMAIL: str
-    
+
     # Email configuration (Resend - preferred for custom domains)
     RESEND_API_KEY: str = ""
 
@@ -122,13 +122,17 @@ async def lifespan(app: FastAPI):
     # Startup: Check Redis cache connection
     logger.info("Connecting to Redis cache...")
     # 1. Initialize Redis ONCE
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-    redis_client = Redis(
-        host=redis_url,
-        port=14027,
-        username=os.getenv("REDIS_USERNAME", "default"),
-        password=os.getenv("REDIS_PASSWORD", ""),
-        decode_responses=True  # Optional: makes output str instead of bytes
+    # redis_client = Redis(
+    #     settings.REDIS_URL,
+    #     # host=settings.REDIS_URL,
+    #     # port=settings.REDIS_PORT,
+    #     username=settings.REDIS_USERNAME,
+    #     password=settings.REDIS_PASSWORD,
+    #     decode_responses=True,  # Optional: makes output str instead of bytes
+    # )
+    redis_client = Redis.from_url(
+        settings.REDIS_URL,
+        decode_responses=True,
     )
 
     # 2. Check Connection
@@ -947,7 +951,7 @@ def checkout(
             }
             for item in order_items_data
         ]
-        
+
         background_tasks.add_task(
             send_order_confirmation_email,
             to_email=user_email,
