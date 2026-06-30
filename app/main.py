@@ -178,6 +178,8 @@ app.add_middleware(
 
 # --- Routes ---
 @app.get("/")
+@app.get("/health")
+@app.get("/api/health")
 def system_status(request: Request, db: Session = Depends(get_db)):
     """Display system status and uptime."""
     uptime = round(time.time() - state.get("start_time", time.time()))
