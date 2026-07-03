@@ -59,9 +59,6 @@ class Settings(BaseSettings):
 
     # Redis cache
     REDIS_URL: str
-    REDIS_PORT: str
-    REDIS_USERNAME: str
-    REDIS_PASSWORD: str
 
     # Email configuration
     SMTP_HOST: str = "smtp.gmail.com"
@@ -162,7 +159,8 @@ def get_redis_client(request: Request):
 app = FastAPI(
     lifespan=lifespan,
     docs_url=None,   # Disable Swagger UI
-    redoc_url=None   # Disable ReDoc
+    redoc_url=None,   # Disable ReDoc
+    redirect_slashes=True,  # Redirect trailing-slash variants to the canonical route
 )
 
 app.add_middleware(
@@ -178,7 +176,6 @@ app.add_middleware(
 
 # --- Routes ---
 @app.get("/")
-@app.get("/health")
 @app.get("/api/health")
 def system_status(request: Request, db: Session = Depends(get_db)):
     """Display system status and uptime."""
@@ -226,7 +223,6 @@ def system_status(request: Request, db: Session = Depends(get_db)):
         },
     }
 
-
 @app.get("/api/cdn-auth")
 @requires_auth
 async def get_cdn_auth(request: Request):
@@ -257,7 +253,12 @@ def get_all_products(
         cache_key = f"products:all:page:{page}:limit:{limit}"
 
     # 3. Check Redis Cache
-    cached_data = redis.get(cache_key)
+    try:
+        cached_data = redis.get(cache_key)
+    except Exception as e:
+        logger.warning(f"Redis get failed for {cache_key}: {e}")
+        cached_data = None
+
     if cached_data:
         record_cache_hit()
         return ProductListWrapper.model_validate_json(cached_data)
@@ -288,7 +289,10 @@ def get_all_products(
     response_wrapper = ProductListWrapper(data=products)
 
     # Serialize and save to Redis (1 hour TTL)
-    redis.set(cache_key, response_wrapper.model_dump_json(), ex=3600)
+    try:
+        redis.set(cache_key, response_wrapper.model_dump_json(), ex=3600)
+    except Exception as e:
+        logger.warning(f"Redis set failed for {cache_key}: {e}")
 
     return response_wrapper
 
